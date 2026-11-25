@@ -20,11 +20,15 @@ if os.environ.get("FAKE_GH_FAIL"):
     sys.exit("HTTP 502: bad gateway")
 q = next(a[6:] for a in sys.argv if a.startswith("query="))
 assert 'owner: "acme"' in q and 'name: "widgets"' in q, q
-by_num = {101: ("feat: a1 thing", "OPEN", True), 102: ("feat: a2 thing", "MERGED", False)}
-by_head = {"c1": (201, "fix: c1 thing", "OPEN", False)}
-def pr(n, title, state, draft):
+by_num = {101: ("feat: a1 thing\x1b]8;;https://evil.example\x07click\x1b]8;;\x07\x1b[2J", "OPEN", True),
+          102: ("feat: a2 thing", "MERGED", False)}
+# c2's only PR comes from someone else's fork that reused the branch name.
+by_head = {"c1": (201, "fix: c1 thing", "OPEN", False, "acme/widgets"),
+           "c2": (202, "spoofed", "OPEN", False, "mallory/widgets")}
+def pr(n, title, state, draft, head="acme/widgets"):
     return {"number": n, "title": title, "state": state, "isDraft": draft,
-            "url": f"https://github.com/acme/widgets/pull/{n}"}
+            "url": f"https://github.com/acme/widgets/pull/{n}",
+            "headRepository": {"nameWithOwner": head}}
 repo = {}
 for alias, num in re.findall(r'(b\d+): pullRequest\(number: (\d+)\)', q):
     repo[alias] = pr(int(num), *by_num[int(num)])
@@ -95,11 +99,13 @@ long=$(NO_COLOR=1 "$BIN" --long --stack)
 expect "--long makes exactly one GitHub call" "1" "$(wc -l <"$T/gh-calls" | tr -d ' ')"
 expect "--long shows a merged PR's state and title" "1" "$(grep -c '│ PR #102 (Merged) feat: a2 thing' <<<"$long")"
 expect "--long shows a draft PR" "1" "$(grep -c '│ PR #101 (Draft) feat: a1 thing' <<<"$long")"
+expect "PR titles cannot inject terminal escapes" "0" "$(grep -c $'\e' <<<"$long")"
 expect "--long shows the PR URL" "1" "$(grep -c '│ https://github.com/acme/widgets/pull/102' <<<"$long")"
 expect "--long flags merged branches like gt log" "1" "$(grep -c '^◉ a2 (merged)' <<<"$long")"
 git checkout -q c1
-expect "--long finds a PR by branch when gh stack has no number" "1" \
-  "$(NO_COLOR=1 "$BIN" --long --stack | grep -c '│ PR #201 (Open) fix: c1 thing')"
+clong=$(NO_COLOR=1 "$BIN" --long --stack)
+expect "--long finds a PR by branch when gh stack has no number" "1" "$(grep -c '│ PR #201 (Open) fix: c1 thing' <<<"$clong")"
+expect "a fork PR with the same branch name is ignored" "0" "$(grep -c 'PR #202' <<<"$clong")"
 git checkout -q a2; : >"$T/gh-calls"
 offline=$(NO_COLOR=1 "$BIN" --long --stack --offline)
 expect "--offline makes no GitHub call" "0" "$(wc -l <"$T/gh-calls" | tr -d ' ')"

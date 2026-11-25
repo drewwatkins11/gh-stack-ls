@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """gt ls-style view of every gh stack stack in this repo. Read-only; no network."""
-import argparse, json, os, subprocess, sys
+import argparse, json, os, re, subprocess, sys
 
 # Graphite's column palette, in its order.
 PALETTE = [(76, 203, 241), (77, 202, 125), (110, 173, 38), (245, 200, 0), (248, 144, 72),
@@ -78,7 +78,20 @@ def push_state(b):
         return "not pushed"
     return None if out("rev-parse", b) == out("rev-parse", upstream) else "needs push"
 
-PR_FIELDS = "number title state isDraft url"
+PR_FIELDS = "number title state isDraft url headRepository { nameWithOwner }"
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+def clean(value): return CONTROL.sub("", str(value))
+
+def trusted(pr):
+    """Keep only well-formed fields from GitHub; text is stripped of terminal control codes."""
+    if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
+        return None
+    if pr.get("state") not in ("OPEN", "MERGED", "CLOSED"):
+        return None
+    url = clean(pr.get("url", ""))
+    return {"number": pr["number"], "state": pr["state"], "isDraft": pr.get("isDraft") is True,
+            "title": clean(pr.get("title", "")), "url": url if url.startswith("https://") else ""}
 
 def fetch_prs():
     """One GraphQL call for every shown branch: by recorded PR number, else by head branch."""
@@ -95,7 +108,7 @@ def fetch_prs():
         if num:
             fields.append(f"b{i}: pullRequest(number: {int(num)}) {{ {PR_FIELDS} }}")
         else:
-            fields.append(f"b{i}: pullRequests(headRefName: {json.dumps(branch)}, first: 1, "
+            fields.append(f"b{i}: pullRequests(headRefName: {json.dumps(branch)}, first: 10, "
                           "states: [OPEN, MERGED, CLOSED], orderBy: {field: CREATED_AT, direction: DESC}) "
                           f"{{ nodes {{ {PR_FIELDS} }} }}")
     query = (f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) "
@@ -108,14 +121,18 @@ def fetch_prs():
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
         repo, reason = None, str(e)
     if not repo:
-        print(f"gh stack-ls: could not load PR details from GitHub ({reason}); showing PR numbers only",
+        print(f"gh stack-ls: could not load PR details from GitHub ({clean(reason)}); showing PR numbers only",
               file=sys.stderr)
         return {}
     prs = {}
     for i, (branch, _) in enumerate(entries):
         hit = repo.get(f"b{i}") or {}
-        pr = next(iter(hit["nodes"]), None) if "nodes" in hit else hit or None
-        if pr:
+        if "nodes" in hit:
+            # A branch-name match can come from anyone's fork; keep only PRs from this repository.
+            hit = next((pr for pr in hit["nodes"] or []
+                        if ((pr or {}).get("headRepository") or {}).get("nameWithOwner", "").lower()
+                        == slug.lower()), None)
+        if pr := trusted(hit):
             prs[branch] = pr
     return prs
 
@@ -160,7 +177,7 @@ for col, s in enumerate(stacks):
             block += [bar + dim(out("log", "-1", "--format=%cr", b)), bar.rstrip()]
         if info:
             block += [f"{bar}{yellow('PR #' + str(info['number']))} {dim('(' + pr_label(info) + ')')} {info['title']}",
-                      bar + magenta(info["url"]), bar.rstrip()]
+                      *([bar + magenta(info["url"])] if info["url"] else []), bar.rstrip()]
         elif pr:
             block += [bar + yellow(f"PR #{pr}"), bar.rstrip()]
         if here_ok:
