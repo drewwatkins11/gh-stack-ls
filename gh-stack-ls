@@ -7,9 +7,10 @@ PALETTE = [(76, 203, 241), (77, 202, 125), (110, 173, 38), (245, 200, 0), (248, 
            (244, 98, 81), (235, 130, 188), (159, 131, 228), (80, 132, 243)]
 
 p = argparse.ArgumentParser(prog="gh stack-ls", description=__doc__)
-p.add_argument("-l", "--long", action="store_true", help="show age, PR and commits for each branch")
+p.add_argument("-l", "--long", action="store_true", help="show age, PR title and state, and commits for each branch")
 p.add_argument("-s", "--stack", action="store_true", help="only show the current branch's stack")
 p.add_argument("-r", "--reverse", action="store_true", help="print trunk first")
+p.add_argument("--offline", action="store_true", help="with --long, skip the GitHub lookup of PR titles and states")
 args = p.parse_args()
 
 if os.environ.get("NO_COLOR"):
@@ -27,6 +28,7 @@ def paint(text, col):
 
 def dim(text): return f"\x1b[2m{text}\x1b[22m" if COLOR else text
 def yellow(text): return f"\x1b[33m{text}\x1b[39m" if COLOR else text
+def magenta(text): return f"\x1b[35m{text}\x1b[39m" if COLOR else text
 
 def git(*a, check=True):
     r = subprocess.run(["git", *a], capture_output=True, text=True)
@@ -76,6 +78,52 @@ def push_state(b):
         return "not pushed"
     return None if out("rev-parse", b) == out("rev-parse", upstream) else "needs push"
 
+PR_FIELDS = "number title state isDraft url"
+
+def fetch_prs():
+    """One GraphQL call for every shown branch: by recorded PR number, else by head branch."""
+    host, _, slug = (state.get("repository") or "").partition(":")
+    if slug.count("/") != 1:
+        host, slug = "github.com", subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+            capture_output=True, text=True).stdout.strip()
+    owner, _, name = slug.partition("/")
+    entries = sorted({(b["branch"], (b.get("pullRequest") or {}).get("number"))
+                      for s in stacks for b in s["branches"]})
+    fields = []
+    for i, (branch, num) in enumerate(entries):
+        if num:
+            fields.append(f"b{i}: pullRequest(number: {int(num)}) {{ {PR_FIELDS} }}")
+        else:
+            fields.append(f"b{i}: pullRequests(headRefName: {json.dumps(branch)}, first: 1, "
+                          "states: [OPEN, MERGED, CLOSED], orderBy: {field: CREATED_AT, direction: DESC}) "
+                          f"{{ nodes {{ {PR_FIELDS} }} }}")
+    query = (f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) "
+             f"{{ {' '.join(fields)} }} }}")
+    try:
+        r = subprocess.run(["gh", "api", "graphql", "--hostname", host or "github.com", "-f", f"query={query}"],
+                           capture_output=True, text=True, timeout=15)
+        repo = (json.loads(r.stdout or "{}").get("data") or {}).get("repository")
+        reason = (r.stderr.strip().splitlines() or ["no data returned"])[0]
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        repo, reason = None, str(e)
+    if not repo:
+        print(f"gh stack-ls: could not load PR details from GitHub ({reason}); showing PR numbers only",
+              file=sys.stderr)
+        return {}
+    prs = {}
+    for i, (branch, _) in enumerate(entries):
+        hit = repo.get(f"b{i}") or {}
+        pr = next(iter(hit["nodes"]), None) if "nodes" in hit else hit or None
+        if pr:
+            prs[branch] = pr
+    return prs
+
+def pr_label(pr):
+    return "Draft" if pr["state"] == "OPEN" and pr["isDraft"] else pr["state"].title()
+
+details = fetch_prs() if args.long and not args.offline else {}
+
 n = len(stacks)
 width = 2 * n + 1
 blocks = []
@@ -86,6 +134,9 @@ for col, s in enumerate(stacks):
         b, parent, meta = chain[i], chain[i - 1], s["branches"][i - 1]
         here_ok = exists(b)
         notes = []
+        info = details.get(b)
+        if info and info["state"] in ("MERGED", "CLOSED"):
+            notes.append(info["state"].lower())
         if not here_ok:
             notes.append("missing locally")
         elif exists(parent) and not contains(parent, b):
@@ -107,12 +158,17 @@ for col, s in enumerate(stacks):
         block = [f"{rails}{dot} {paint(b, col)}{note}"]
         if here_ok:
             block += [bar + dim(out("log", "-1", "--format=%cr", b)), bar.rstrip()]
-            if pr:
-                block += [bar + yellow(f"PR #{pr}"), bar.rstrip()]
+        if info:
+            block += [f"{bar}{yellow('PR #' + str(info['number']))} {dim('(' + pr_label(info) + ')')} {info['title']}",
+                      bar + magenta(info["url"]), bar.rstrip()]
+        elif pr:
+            block += [bar + yellow(f"PR #{pr}"), bar.rstrip()]
+        if here_ok:
             base = parent if exists(parent) else None
             log = out("log", "--format=%h - %s", f"{base}..{b}" if base else b, "-n", "20")
             block += [bar + dim(c) for c in log.splitlines()]
-        block.append(bar.rstrip())
+        if block[-1] != bar.rstrip():
+            block.append(bar.rstrip())
         blocks.append(block)
 
 trunks = ", ".join(sorted({s["trunk"]["branch"] for s in stacks}))

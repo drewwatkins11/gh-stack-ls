@@ -29,7 +29,8 @@ Requires `git`, `python3`, and the `gh-stack` extension. macOS and Linux only.
 
 | Flag | Graphite equivalent | What it does |
 |---|---|---|
-| `-l`, `--long` | `gt log` | Adds each branch's age, PR number, and its own commits (up to 20) |
+| `-l`, `--long` | `gt log` | Adds each branch's age, its PR's number, state (Draft, Open, Merged, Closed), title and URL, and the branch's own commits (up to 20) |
+| `--offline` | | With `--long`, skips GitHub and shows PR numbers only |
 | `-s`, `--stack` | `gt ls --stack` | Shows only the current branch's stack. On a trunk, shows every stack on that trunk |
 | `-r`, `--reverse` | `gt ls --reverse` | Prints the trunk first |
 
@@ -40,13 +41,16 @@ Requires `git`, `python3`, and the `gh-stack` extension. macOS and Linux only.
 - A worktree name means the branch is checked out in another worktree.
 - `needs restack` means the branch no longer contains its parent's tip. Run `gh stack rebase`.
 - `missing locally` means the stack lists a branch that no longer exists in this clone.
+- In `--long` only: `merged` or `closed` comes from the branch's PR on GitHub.
 - In `--long` only: `needs push` means the branch differs from its upstream (or `origin/<branch>`); `not pushed` means it has no remote branch at all. Both are based on your last fetch.
 
 Colour is on when stdout is a terminal. `NO_COLOR` turns it off, and `FORCE_COLOR` turns it on, for example when piping into `less -R`.
 
 ## How it works
 
-It reads the state file `gh stack` keeps at `.git/gh-stack` and checks ancestry with `git merge-base`. It is read-only, makes no network calls, and stores nothing of its own. PR titles and states (draft, merged) would need the GitHub API, so they are not shown.
+It reads the state file `gh stack` keeps at `.git/gh-stack` and checks ancestry with `git merge-base`. It is read-only and stores nothing of its own.
+
+The default view makes no network calls. `--long` makes one GraphQL request through `gh` for every branch shown. It looks a PR up by the number `gh stack` recorded, or else by branch name, which also finds PRs opened outside `gh stack`. If GitHub can't be reached, it warns on stderr and shows PR numbers only.
 
 That file is not a documented interface. The tool supports state `schemaVersion` 1 and exits with an error on any other version rather than guessing. If `gh stack` changes its format, please open an issue.
 
