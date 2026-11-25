@@ -52,6 +52,8 @@ It reads the state file `gh stack` keeps at `.git/gh-stack` and checks ancestry 
 
 The default view makes no network calls. `--long` makes one GraphQL request through `gh` for every branch shown. It looks a PR up by the number `gh stack` recorded, or else by branch name, which also finds PRs opened outside `gh stack`. If GitHub can't be reached, it warns on stderr and shows PR numbers only.
 
+Text from GitHub is treated as untrusted: titles, links and error messages have terminal control characters stripped before printing, so a PR title can't inject escape sequences. A PR found by branch name only counts if its branch is in this repository, so a fork that reuses your branch name can't pose as your PR.
+
 That file is not a documented interface. The tool supports state `schemaVersion` 1 and exits with an error on any other version rather than guessing. If `gh stack` changes its format, please open an issue.
 
 Only stacks that `gh stack` tracks appear. To adopt existing branches, run `gh stack init --base <trunk> <bottom> ... <top>`.
