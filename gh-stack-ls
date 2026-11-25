@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""gt-ls-style view of every gh-stack stack in this repo. Read-only; no network."""
+import json, os, subprocess, sys
+
+def git(*a, check=True):
+    r = subprocess.run(["git", *a], capture_output=True, text=True)
+    if check and r.returncode:
+        sys.exit(r.stderr.strip())
+    return r
+
+common = git("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+path = os.path.join(common, "gh-stack")
+if not os.path.exists(path):
+    sys.exit("no gh-stack stacks tracked in this repo")
+state = json.load(open(path))
+if state.get("schemaVersion") != 1:
+    sys.exit(f"unsupported gh-stack state schemaVersion {state.get('schemaVersion')!r} "
+             "(this tool understands 1); please open an issue")
+stacks = [s for s in state["stacks"] if s["branches"]]
+if not stacks:
+    sys.exit("no gh-stack stacks tracked in this repo")
+current = git("branch", "--show-current", check=False).stdout.strip()
+
+worktrees, wt = {}, None
+for line in git("worktree", "list", "--porcelain").stdout.splitlines():
+    if line.startswith("worktree "):
+        wt = os.path.basename(line[9:])
+    elif line.startswith("branch refs/heads/"):
+        worktrees[line[18:]] = wt
+here = os.path.basename(git("rev-parse", "--show-toplevel").stdout.strip())
+
+def exists(b): return git("rev-parse", "-q", "--verify", f"refs/heads/{b}", check=False).returncode == 0
+def contains(anc, b): return git("merge-base", "--is-ancestor", anc, b, check=False).returncode == 0
+
+n, width = len(stacks), 2 * len(stacks) + 1
+for col, s in enumerate(stacks):
+    trunk = s["trunk"]["branch"]
+    chain = [trunk] + [b["branch"] for b in s["branches"]]
+    for i in range(len(chain) - 1, 0, -1):
+        b, parent, meta = chain[i], chain[i - 1], s["branches"][i - 1]
+        notes = []
+        if not exists(b):
+            notes.append("missing locally")
+        elif exists(parent) and not contains(parent, b):
+            notes.append("needs restack")
+        if pr := (meta.get("pullRequest") or {}).get("number"):
+            notes.append(f"#{pr}")
+        if (w := worktrees.get(b)) and w != here:
+            notes.append(w)
+        dot = "◉" if b == current else "◯"
+        print(f"{'│ ' * col}{dot}".ljust(width) + f" {b}" + (f" ({', '.join(notes)})" if notes else ""))
+
+trunks = {s["trunk"]["branch"] for s in stacks}
+tail = "─┴" * (n - 2) + "─┘" if n > 1 else ""
+print(f"{'◉' if current in trunks else '◯'}{tail}".ljust(width) + " " + ", ".join(sorted(trunks)))
