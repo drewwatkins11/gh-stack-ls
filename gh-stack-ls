@@ -11,14 +11,16 @@ def git(*a, check=True):
 common = git("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
 path = os.path.join(common, "gh-stack")
 if not os.path.exists(path):
-    sys.exit("no gh-stack stacks tracked in this repo")
+    print("no gh-stack stacks tracked in this repo", file=sys.stderr)
+    sys.exit(0)
 state = json.load(open(path))
 if state.get("schemaVersion") != 1:
     sys.exit(f"unsupported gh-stack state schemaVersion {state.get('schemaVersion')!r} "
              "(this tool understands 1); please open an issue")
 stacks = [s for s in state["stacks"] if s["branches"]]
 if not stacks:
-    sys.exit("no gh-stack stacks tracked in this repo")
+    print("no gh-stack stacks tracked in this repo", file=sys.stderr)
+    sys.exit(0)
 current = git("branch", "--show-current", check=False).stdout.strip()
 
 worktrees, wt = {}, None
