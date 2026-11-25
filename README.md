@@ -5,14 +5,16 @@ A `gt ls`-style tree of every stack that [`gh stack`](https://github.com/github/
 `gh stack view` shows only the stack you are on. `gh stack-ls` shows all of them at once:
 
 ```
-◉       a2 (#102)
-◯       a1 (#101)
-│ ◯     b1 (sacramento)
-│ │ ◯   c3
-│ │ ◯   c2 (needs restack)
-│ │ ◯   c1
-◯─┴─┘   develop
+◉      a2 (#102)
+◯      a1 (#101)
+│ ◯    b1 (sacramento)
+│ │ ◯  c3
+│ │ ◯  c2 (needs restack)
+│ │ ◯  c1
+◯─┴─┘  develop
 ```
+
+In a terminal, each stack gets its own column colour, using Graphite's palette and order. The output is meant to look the same as `gt ls`.
 
 ## Install
 
@@ -23,6 +25,14 @@ gh stack-ls
 
 Requires `git`, `python3`, and the `gh-stack` extension. macOS and Linux only.
 
+## Options
+
+| Flag | Graphite equivalent | What it does |
+|---|---|---|
+| `-l`, `--long` | `gt log` | Adds each branch's age, PR number, and its own commits (up to 20) |
+| `-s`, `--stack` | `gt ls --stack` | Shows only the current branch's stack. On a trunk, shows every stack on that trunk |
+| `-r`, `--reverse` | `gt ls --reverse` | Prints the trunk first |
+
 ## What it shows
 
 - `◉` marks the branch you have checked out.
@@ -30,14 +40,23 @@ Requires `git`, `python3`, and the `gh-stack` extension. macOS and Linux only.
 - A worktree name means the branch is checked out in another worktree.
 - `needs restack` means the branch no longer contains its parent's tip. Run `gh stack rebase`.
 - `missing locally` means the stack lists a branch that no longer exists in this clone.
+- In `--long` only: `needs push` means the branch differs from its upstream (or `origin/<branch>`); `not pushed` means it has no remote branch at all. Both are based on your last fetch.
+
+Colour is on when stdout is a terminal. `NO_COLOR` turns it off, and `FORCE_COLOR` turns it on, for example when piping into `less -R`.
 
 ## How it works
 
-It reads the state file `gh stack` keeps at `.git/gh-stack` and checks ancestry with `git merge-base`. It is read-only, makes no network calls, and stores nothing of its own.
+It reads the state file `gh stack` keeps at `.git/gh-stack` and checks ancestry with `git merge-base`. It is read-only, makes no network calls, and stores nothing of its own. PR titles and states (draft, merged) would need the GitHub API, so they are not shown.
 
 That file is not a documented interface. The tool supports state `schemaVersion` 1 and exits with an error on any other version rather than guessing. If `gh stack` changes its format, please open an issue.
 
 Only stacks that `gh stack` tracks appear. To adopt existing branches, run `gh stack init --base <trunk> <bottom> ... <top>`.
+
+## Development
+
+```sh
+test/smoke.sh
+```
 
 ## License
 

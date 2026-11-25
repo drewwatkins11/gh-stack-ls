@@ -1,12 +1,43 @@
 #!/usr/bin/env python3
-"""gt-ls-style view of every gh-stack stack in this repo. Read-only; no network."""
-import json, os, subprocess, sys
+"""gt ls-style view of every gh stack stack in this repo. Read-only; no network."""
+import argparse, json, os, subprocess, sys
+
+# Graphite's column palette, in its order.
+PALETTE = [(76, 203, 241), (77, 202, 125), (110, 173, 38), (245, 200, 0), (248, 144, 72),
+           (244, 98, 81), (235, 130, 188), (159, 131, 228), (80, 132, 243)]
+
+p = argparse.ArgumentParser(prog="gh stack-ls", description=__doc__)
+p.add_argument("-l", "--long", action="store_true", help="show age, PR and commits for each branch")
+p.add_argument("-s", "--stack", action="store_true", help="only show the current branch's stack")
+p.add_argument("-r", "--reverse", action="store_true", help="print trunk first")
+args = p.parse_args()
+
+if os.environ.get("NO_COLOR"):
+    COLOR = False
+elif os.environ.get("FORCE_COLOR", "0") != "0":
+    COLOR = True
+else:
+    COLOR = sys.stdout.isatty()
+
+def paint(text, col):
+    if not COLOR:
+        return text
+    r, g, b = PALETTE[col % len(PALETTE)]
+    return f"\x1b[38;2;{r};{g};{b}m{text}\x1b[39m"
+
+def dim(text): return f"\x1b[2m{text}\x1b[22m" if COLOR else text
+def yellow(text): return f"\x1b[33m{text}\x1b[39m" if COLOR else text
 
 def git(*a, check=True):
     r = subprocess.run(["git", *a], capture_output=True, text=True)
     if check and r.returncode:
         sys.exit(r.stderr.strip())
     return r
+
+def out(*a): return git(*a, check=False).stdout.strip()
+def ref_ok(r): return git("rev-parse", "-q", "--verify", r, check=False).returncode == 0
+def exists(b): return ref_ok(f"refs/heads/{b}")
+def contains(anc, b): return git("merge-base", "--is-ancestor", anc, b, check=False).returncode == 0
 
 common = git("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
 path = os.path.join(common, "gh-stack")
@@ -21,37 +52,77 @@ stacks = [s for s in state["stacks"] if s["branches"]]
 if not stacks:
     print("no gh-stack stacks tracked in this repo", file=sys.stderr)
     sys.exit(0)
-current = git("branch", "--show-current", check=False).stdout.strip()
+current = out("branch", "--show-current")
+
+if args.stack:
+    mine = [s for s in stacks if current in [b["branch"] for b in s["branches"]]]
+    if not mine:
+        mine = [s for s in stacks if current and s["trunk"]["branch"] == current]
+    if not mine:
+        sys.exit(f"{current or 'detached HEAD'} is not in a gh stack")
+    stacks = mine
 
 worktrees, wt = {}, None
-for line in git("worktree", "list", "--porcelain").stdout.splitlines():
+for line in out("worktree", "list", "--porcelain").splitlines():
     if line.startswith("worktree "):
         wt = os.path.basename(line[9:])
     elif line.startswith("branch refs/heads/"):
         worktrees[line[18:]] = wt
-here = os.path.basename(git("rev-parse", "--show-toplevel").stdout.strip())
+here = os.path.basename(out("rev-parse", "--show-toplevel"))
 
-def exists(b): return git("rev-parse", "-q", "--verify", f"refs/heads/{b}", check=False).returncode == 0
-def contains(anc, b): return git("merge-base", "--is-ancestor", anc, b, check=False).returncode == 0
+def push_state(b):
+    upstream = f"{b}@{{upstream}}" if ref_ok(f"{b}@{{upstream}}") else f"refs/remotes/origin/{b}"
+    if not ref_ok(upstream):
+        return "not pushed"
+    return None if out("rev-parse", b) == out("rev-parse", upstream) else "needs push"
 
-n, width = len(stacks), 2 * len(stacks) + 1
+n = len(stacks)
+width = 2 * n + 1
+blocks = []
 for col, s in enumerate(stacks):
-    trunk = s["trunk"]["branch"]
-    chain = [trunk] + [b["branch"] for b in s["branches"]]
+    chain = [s["trunk"]["branch"]] + [b["branch"] for b in s["branches"]]
+    rails = "".join(paint("│", c) + paint(" ", c) for c in range(col))
     for i in range(len(chain) - 1, 0, -1):
         b, parent, meta = chain[i], chain[i - 1], s["branches"][i - 1]
+        here_ok = exists(b)
         notes = []
-        if not exists(b):
+        if not here_ok:
             notes.append("missing locally")
         elif exists(parent) and not contains(parent, b):
             notes.append("needs restack")
-        if pr := (meta.get("pullRequest") or {}).get("number"):
+        pr = (meta.get("pullRequest") or {}).get("number")
+        if args.long and here_ok and (ps := push_state(b)):
+            notes.append(ps)
+        if not args.long and pr:
             notes.append(f"#{pr}")
         if (w := worktrees.get(b)) and w != here:
             notes.append(w)
-        dot = "◉" if b == current else "◯"
-        print(f"{'│ ' * col}{dot}".ljust(width) + f" {b}" + (f" ({', '.join(notes)})" if notes else ""))
+        dot = paint("◉" if b == current else "◯", col)
+        if not args.long:
+            pad = " " * (width - 2 * col - 1)
+            blocks.append([f"{rails}{dot}{pad}{paint(b, col)}" + (f" ({', '.join(notes)})" if notes else "")])
+            continue
+        note = f" {yellow('(' + ', '.join(notes) + ')')}" if notes else ""
+        bar = rails + paint("│", col) + " "
+        block = [f"{rails}{dot} {paint(b, col)}{note}"]
+        if here_ok:
+            block += [bar + dim(out("log", "-1", "--format=%cr", b)), bar.rstrip()]
+            if pr:
+                block += [bar + yellow(f"PR #{pr}"), bar.rstrip()]
+            base = parent if exists(parent) else None
+            log = out("log", "--format=%h - %s", f"{base}..{b}" if base else b, "-n", "20")
+            block += [bar + dim(c) for c in log.splitlines()]
+        block.append(bar.rstrip())
+        blocks.append(block)
 
-trunks = {s["trunk"]["branch"] for s in stacks}
-tail = "─┴" * (n - 2) + "─┘" if n > 1 else ""
-print(f"{'◉' if current in trunks else '◯'}{tail}".ljust(width) + " " + ", ".join(sorted(trunks)))
+trunks = ", ".join(sorted({s["trunk"]["branch"] for s in stacks}))
+tee, corner = ("┬", "┐") if args.reverse else ("┴", "┘")
+line = paint("◉" if current in trunks.split(", ") else "◯", 0)
+for c in range(1, n):
+    line += paint("─", c - 1) + paint(corner if c == n - 1 else tee, c)
+gap = " " if args.long else " " * (width - 2 * n + 1)
+blocks.append([line + gap + paint(trunks, 0)])
+
+if args.reverse:
+    blocks.reverse()
+print("\n".join(l for block in blocks for l in block))
